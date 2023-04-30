@@ -1,22 +1,22 @@
 package com.evince.evincepracticaltask.activity.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.DownloadManager
+import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.os.Environment
-import android.provider.MediaStore
 import android.provider.Settings
-import android.provider.SyncStateContract
-import android.service.autofill.UserData
 import android.text.TextUtils
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,21 +25,12 @@ import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
+
 import com.bumptech.glide.Glide
 import com.evince.evincepracticaltask.R
 import com.evince.evincepracticaltask.activity.model.UserModel
 import com.evince.evincepracticaltask.activity.vm.UserVM
 import com.evince.evincepracticaltask.databinding.ActivityUserProfileBinding
-import com.evince.evincepracticaltask.extension.showToast
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 class UserProfileActivity : AppCompatActivity() {
     lateinit var activityUserProfileBinding: ActivityUserProfileBinding
@@ -65,6 +56,10 @@ class UserProfileActivity : AppCompatActivity() {
         }
 
 
+        val intentFilter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        registerReceiver(downloadReceiver, intentFilter)
+
+
         activityUserProfileBinding.btnUpdate.setOnClickListener {
             updateata()
             finish()
@@ -73,6 +68,14 @@ class UserProfileActivity : AppCompatActivity() {
         activityUserProfileBinding.btnDelete.setOnClickListener {
             userVM.delUser(userModel!!)
             finish()
+        }
+
+        activityUserProfileBinding.constUserProfile.setOnClickListener {
+            if (checkPermission()){
+                downloadImg()
+            }else{
+                requestPermission()
+            }
         }
 
         bindData(userModel!!)
@@ -86,17 +89,58 @@ class UserProfileActivity : AppCompatActivity() {
         Glide.with(this).load(userModel.avatar).into(activityUserProfileBinding.ivUserProfile)
 
 
-        if (checkPermission()){
-            downloadImg()
-        }else{
-            requestPermission()
-        }
-
     }
 
     fun downloadImg(){
-        downloadImage(this,userModel?.avatar!!)
+        val request = DownloadManager.Request(Uri.parse(userModel!!.avatar))
+            .setTitle("Image Download")
+            .setDescription("Downloading image")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Image.jpg")
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(true)
+
+            val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            downloadManager.enqueue(request)
+
+
     }
+
+    private val downloadReceiver = object : BroadcastReceiver() {
+        @RequiresApi(Build.VERSION_CODES.O)
+        @SuppressLint("Range")
+        override fun onReceive(context: Context, intent: Intent) {
+            val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+                val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                val query = DownloadManager.Query().setFilterById(id)
+                val cursor = downloadManager.query(query)
+                if (cursor.moveToFirst()) {
+                    val status = cursor.getInt(cursor.getColumnIndex(DownloadManager.COLUMN_STATUS))
+                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                        val fileUri = cursor.getString(cursor.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI))
+                        showDownloadNotification(fileUri)
+                    }
+                }
+                cursor.close()
+            }
+        }
+
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun showDownloadNotification(fileUri: String) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationChannel = NotificationChannel("channel_id", "channel_name", NotificationManager.IMPORTANCE_DEFAULT)
+        notificationManager.createNotificationChannel(notificationChannel)
+
+        val notificationBuilder = NotificationCompat.Builder(this, "channel_id")
+            .setContentTitle("Image Downloaded")
+            .setContentText("The image has been downloaded successfully.")
+            .setSmallIcon(R.drawable.ic_profile1)
+            .setAutoCancel(true)
+            .setStyle(NotificationCompat.BigPictureStyle().bigPicture(BitmapFactory.decodeFile(fileUri)))
+
+        notificationManager.notify(1, notificationBuilder.build())
+    }
+
 
     fun requestPermission(){
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R){
@@ -184,49 +228,11 @@ class UserProfileActivity : AppCompatActivity() {
     }
 
 
-    private val DOWNLOAD_NOTIFICATION_ID = 1
 
-    fun downloadImage(context: Context, urlString: String) {
-        val scope = CoroutineScope(Dispatchers.IO)
-        scope.launch {
-            val url = URL(urlString)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.doInput = true
-            connection.connect()
 
-            val input = connection.inputStream
-            val bitmap = BitmapFactory.decodeStream(input)
-            withContext(Dispatchers.Main) {
-                saveImage(context, bitmap)
-                sendNotification(context)
-            }
-        }
-    }
-
-    fun saveImage(context: Context, bitmap: Bitmap) {
-        val file = File(context.getExternalFilesDir(Environment.DIRECTORY_PICTURES), "myImage.png")
-        val outputStream = FileOutputStream(file)
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-        outputStream.flush()
-        outputStream.close()
-
-        // Add the image to the gallery so it can be viewed in the device's gallery app
-        val mediaScanIntent = Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE)
-        val contentUri = Uri.fromFile(file)
-        mediaScanIntent.data = contentUri
-        context.sendBroadcast(mediaScanIntent)
-    }
-
-    fun sendNotification(context: Context) {
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val notificationBuilder = NotificationCompat.Builder(context, "download_channel")
-            .setSmallIcon(R.drawable.ic_profile1)
-            .setContentTitle("Image Downloaded")
-            .setContentText("Your image has been downloaded successfully.")
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-
-        notificationManager.notify(DOWNLOAD_NOTIFICATION_ID, notificationBuilder.build())
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(downloadReceiver)
     }
 
 
